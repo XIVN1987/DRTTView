@@ -1,4 +1,4 @@
-# RTTView
+# DRTTView
 SEGGER-RTT Terminal program using CMSIS-DAP (DAPLink)
 
 to run this software, you need python 2.7, pyqt4, pyqwt5, enum34 and a usb backend (hidapi or pywinusb for windows, pyusb for linux, hidapi for mac)

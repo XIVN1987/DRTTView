@@ -1,11 +1,7 @@
-#! C:\Python27\python.exe
+#! python2
 #coding: utf-8
-''' 升级记录
-'''
 import os
-import re
 import sys
-import time
 import struct
 import ConfigParser
 
@@ -14,8 +10,7 @@ sip.setapi('QString', 2)
 from PyQt4 import QtCore, QtGui, uic
 from PyQt4.Qwt5 import QwtPlot, QwtPlotCurve
 
-from daplink import coresight
-from daplink import pyDAPAccess
+from daplink import coresight, pyDAPAccess
 
 
 class RingBuffer(object):
@@ -27,18 +22,18 @@ class RingBuffer(object):
 
 
 '''
-class RTTView(QtGui.QWidget):
-    def __init__(self, parent=None):
-        super(RTTView, self).__init__(parent)
-        
-        uic.loadUi('RTTView.ui', self)
-'''
 from RTTView_UI import Ui_RTTView
 class RTTView(QtGui.QWidget, Ui_RTTView):
     def __init__(self, parent=None):
         super(RTTView, self).__init__(parent)
         
         self.setupUi(self)
+'''
+class RTTView(QtGui.QWidget):
+    def __init__(self, parent=None):
+        super(RTTView, self).__init__(parent)
+        
+        uic.loadUi('RTTView.ui', self)
 
         self.initSetting()
 
@@ -46,12 +41,12 @@ class RTTView(QtGui.QWidget, Ui_RTTView):
 
         self.daplink = None
         
-        self.tmrDAP = QtCore.QTimer()
-        self.tmrDAP.setInterval(10)
-        self.tmrDAP.timeout.connect(self.on_tmrDAP_timeout)
-        self.tmrDAP.start()
+        self.tmrRTT = QtCore.QTimer()
+        self.tmrRTT.setInterval(10)
+        self.tmrRTT.timeout.connect(self.on_tmrRTT_timeout)
+        self.tmrRTT.start()
 
-        self.tmrCntr = 0    # tmrDAP超时一次，tmrCntr加一
+        self.tmrCntr = 0    # tmrRTT超时一次，tmrCntr加一
     
     def initSetting(self):
         if not os.path.exists('setting.ini'):
@@ -60,10 +55,11 @@ class RTTView(QtGui.QWidget, Ui_RTTView):
         self.conf = ConfigParser.ConfigParser()
         self.conf.read('setting.ini')
         
-        if not self.conf.has_section('globals'):
-            self.conf.add_section('globals')
-            self.conf.set('globals', 'mappath', '[]')
-        for path in eval(self.conf.get('globals', 'mappath')): self.cmbMap.insertItem(10, path)
+        if not self.conf.has_section('Memory'):
+            self.conf.add_section('Memory')
+            self.conf.set('Memory', 'StartAddr', '0x20000000')
+
+        self.linAddr.setText(self.conf.get('Memory', 'StartAddr'))
 
     def initQwtPlot(self):
         self.PlotBuff = ''
@@ -76,16 +72,8 @@ class RTTView(QtGui.QWidget, Ui_RTTView):
         self.PlotCurve.attach(self.qwtPlot)
         self.PlotCurve.setData(range(1, len(self.PlotData)+1), self.PlotData)
 
-        self.on_cmbMode_currentIndexChanged(u'文本')
+        self.on_cmbMode_currentIndexChanged(u'文本显示')
     
-    def parseRTTAddr(self):
-        with open(self.cmbMap.currentText(), 'r') as f:
-            for line in f:
-                match = re.match('\s+_SEGGER_RTT\s+(0x[0-9a-fA-F]{8})\s+Data.+', line)
-                if match: return int(match.group(1), 16)
-            else:
-                raise Exception('Can not found _SEGGER_RTT')
-
     @QtCore.pyqtSlot()
     def on_btnOpen_clicked(self):
         if self.btnOpen.text() == u'打开连接':
@@ -99,21 +87,26 @@ class RTTView(QtGui.QWidget, Ui_RTTView):
                 self.ap = coresight.ap.AHB_AP(self.dp, 0)
                 self.ap.init()
                 
-                self.RTTAddr = self.parseRTTAddr()
+                Addr = int(self.linAddr.text(), 16)
+                for i in range(256):
+                    buff = self.ap.readBlockMemoryUnaligned8(Addr + 1024*i, 1024)
+                    buff = ''.join([chr(x) for x in buff])
+                    index = buff.find('SEGGER RTT')
+                    if index != -1:
+                        self.RTTAddr = Addr + 1024*i + index
+                        print '_SEGGER_RTT @ 0x%08X' %self.RTTAddr
+                        break
+                else:
+                    raise Exception('Can not find _SEGGER_RTT')
             except Exception as e:
                 print e
             else:
                 self.btnOpen.setText(u'关闭连接')
                 self.lblOpen.setPixmap(QtGui.QPixmap("./Image/inopening.png"))
         else:
-            try:
-                self.daplink.close()
-            except Exception as e:
-                print e
-            finally:
-                self.btnOpen.setText(u'打开连接')
-                self.lblOpen.setPixmap(QtGui.QPixmap("./Image/inclosing.png"))
-        
+            self.btnOpen.setText(u'打开连接')
+            self.lblOpen.setPixmap(QtGui.QPixmap("./Image/inclosing.png"))
+                
     def aUpEmpty(self):
         LEN = (16 + 4*2) + (4*6) * 4
         
@@ -149,23 +142,18 @@ class RTTView(QtGui.QWidget, Ui_RTTView):
         
         return ''.join([chr(x) for x in arr])
     
-    def on_tmrDAP_timeout(self):
+    def on_tmrRTT_timeout(self):
         if self.btnOpen.text() == u'关闭连接':
-            ss = ''
-            try:
-                if not self.aUpEmpty():
-                    ss = self.aUpRead()
-            except Exception as e:
-                pass
+            if not self.aUpEmpty():
+                str = self.aUpRead()
 
-            if ss:
-                if self.mode == u'文本':
+                if self.mode == u'文本显示':
                     if len(self.txtMain.toPlainText()) > 50000: self.txtMain.clear()
                     self.txtMain.moveCursor(QtGui.QTextCursor.End)
-                    self.txtMain.insertPlainText(ss)
+                    self.txtMain.insertPlainText(str)
                     
-                elif self.mode == u'波形':
-                    self.PlotBuff += ss
+                elif self.mode == u'波形显示':
+                    self.PlotBuff += str
                     if self.PlotBuff.rfind(',') == -1: return
                     try:
                         d = [int(x) for x in self.PlotBuff[0:self.PlotBuff.rfind(',')].split(',')]
@@ -181,7 +169,6 @@ class RTTView(QtGui.QWidget, Ui_RTTView):
                     self.qwtPlot.replot()
 
         self.detect_daplink()   # 自动检测 DAPLink 的热插拔
-
 
     def detect_daplink(self):
         daplinks = pyDAPAccess.DAPAccess.get_connected_devices()
@@ -204,28 +191,18 @@ class RTTView(QtGui.QWidget, Ui_RTTView):
             self.linDAP.clear()
             self.linDAP.setText(self.daplink._product_name)
 
-    @QtCore.pyqtSlot()
-    def on_btnMap_clicked(self):
-        path = QtGui.QFileDialog.getOpenFileName(caption=u'项目.map文件路径', filter=u'MDK .map file (*.map)', directory=self.cmbMap.currentText())
-        if path != '':
-            self.cmbMap.insertItem(0, path)
-            self.cmbMap.setCurrentIndex(0)
-    
     @QtCore.pyqtSlot(str)
     def on_cmbMode_currentIndexChanged(self, str):
         self.mode = str
-        self.txtMain.setVisible(self.mode == u'文本')
-        self.qwtPlot.setVisible(self.mode == u'波形')
+        self.txtMain.setVisible(self.mode == u'文本显示')
+        self.qwtPlot.setVisible(self.mode == u'波形显示')
     
     @QtCore.pyqtSlot()
     def on_btnClear_clicked(self):
         self.txtMain.clear()
     
-    def closeEvent(self, evt):        
-        paths = []
-        for i in range(min(10, self.cmbMap.count())):
-            paths.append(self.cmbMap.itemText(i))
-        self.conf.set('globals', 'mappath', repr(paths))
+    def closeEvent(self, evt):
+        self.conf.set('Memory', 'StartAddr', self.linAddr.text())   
         self.conf.write(open('setting.ini', 'w'))
 
 

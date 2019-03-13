@@ -7,8 +7,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>594</width>
-    <height>466</height>
+    <width>670</width>
+    <height>480</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -18,7 +18,7 @@
    </sizepolicy>
   </property>
   <property name="windowTitle">
-   <string>XIVN1987 SEGGER-RTT Viewer by DAPLink</string>
+   <string>XIVN1987 SEGGER-RTT Client</string>
   </property>
   <property name="windowIcon">
    <iconset>
@@ -72,42 +72,27 @@
    <item>
     <layout class="QHBoxLayout" name="hLayout2">
      <item>
-      <widget class="QLabel" name="lblMap">
+      <widget class="QLabel" name="lblAddr">
        <property name="text">
-        <string>项目.map文件路径：</string>
+        <string>SRAM内存起始地址：</string>
        </property>
       </widget>
      </item>
      <item>
-      <widget class="QComboBox" name="cmbMap">
-       <property name="sizePolicy">
-        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-         <horstretch>0</horstretch>
-         <verstretch>0</verstretch>
-        </sizepolicy>
+      <widget class="QLineEdit" name="linAddr">
+       <property name="maximumSize">
+        <size>
+         <width>100</width>
+         <height>16777215</height>
+        </size>
        </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="btnMap">
        <property name="text">
-        <string>...</string>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="hLayout3">
-     <item>
-      <widget class="QPushButton" name="btnClear">
-       <property name="text">
-        <string>清除</string>
+        <string>0x20000000</string>
        </property>
       </widget>
      </item>
      <item>
-      <spacer name="hSpacer31">
+      <spacer name="hSpacer21">
        <property name="orientation">
         <enum>Qt::Horizontal</enum>
        </property>
@@ -152,12 +137,12 @@
       </widget>
      </item>
      <item>
-      <spacer name="hSpacer32">
+      <spacer name="hSpacer22">
        <property name="orientation">
         <enum>Qt::Horizontal</enum>
        </property>
        <property name="sizeType">
-        <enum>QSizePolicy::Fixed</enum>
+        <enum>QSizePolicy::Expanding</enum>
        </property>
        <property name="sizeHint" stdset="0">
         <size>
@@ -169,16 +154,35 @@
      </item>
      <item>
       <widget class="QComboBox" name="cmbMode">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>80</width>
+         <height>0</height>
+        </size>
+       </property>
        <item>
         <property name="text">
-         <string>文本</string>
+         <string>文本显示</string>
         </property>
        </item>
        <item>
         <property name="text">
-         <string>波形</string>
+         <string>波形显示</string>
         </property>
        </item>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnClear">
+       <property name="text">
+        <string>清除</string>
+       </property>
       </widget>
      </item>
     </layout>

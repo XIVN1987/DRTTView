@@ -3,6 +3,8 @@
 import os
 import sys
 import struct
+import logging
+import collections
 import ConfigParser
 
 import sip
@@ -10,7 +12,11 @@ sip.setapi('QString', 2)
 from PyQt4 import QtCore, QtGui, uic
 from PyQt4.Qwt5 import QwtPlot, QwtPlotCurve
 
-from daplink import coresight, pyDAPAccess
+from pyocd import coresight
+from pyocd.probe import aggregator
+
+
+os.environ['PATH'] = os.path.dirname(os.path.abspath(__file__)) + os.pathsep + os.environ['PATH']
 
 
 class RingBuffer(object):
@@ -39,14 +45,16 @@ class RTTView(QtGui.QWidget):
 
         self.initQwtPlot()
 
+        self.rcvbuff = b''
+
         self.daplink = None
-        
+
         self.tmrRTT = QtCore.QTimer()
         self.tmrRTT.setInterval(10)
         self.tmrRTT.timeout.connect(self.on_tmrRTT_timeout)
         self.tmrRTT.start()
 
-        self.tmrCntr = 0    # tmrRTT超时一次，tmrCntr加一
+        self.tmrRTT_Cnt = 0
     
     def initSetting(self):
         if not os.path.exists('setting.ini'):
@@ -62,34 +70,35 @@ class RTTView(QtGui.QWidget):
         self.linAddr.setText(self.conf.get('Memory', 'StartAddr'))
 
     def initQwtPlot(self):
-        self.PlotBuff = ''
         self.PlotData = [0]*1000
         
         self.qwtPlot = QwtPlot(self)
+        self.qwtPlot.setVisible(False)
         self.vLayout0.insertWidget(0, self.qwtPlot)
         
         self.PlotCurve = QwtPlotCurve()
         self.PlotCurve.attach(self.qwtPlot)
         self.PlotCurve.setData(range(1, len(self.PlotData)+1), self.PlotData)
-
-        self.on_cmbMode_currentIndexChanged(u'文本显示')
     
     @QtCore.pyqtSlot()
     def on_btnOpen_clicked(self):
         if self.btnOpen.text() == u'打开连接':
             try:
+                self.daplink = self.daplinks[self.cmbDAP.currentText()]
                 self.daplink.open()
+                
+                dp = coresight.dap.DebugPort(self.daplink, None)
+                dp.init()
+                dp.power_up_debug()
 
-                self.dp = coresight.dap.DebugPort(self.daplink)
-                self.dp.init()
-                self.dp.power_up_debug()
+                ap = coresight.ap.AHB_AP(dp, 0)
+                ap.init()
 
-                self.ap = coresight.ap.AHB_AP(self.dp, 0)
-                self.ap.init()
+                self.dap = coresight.cortex_m.CortexM(None, ap)
                 
                 Addr = int(self.linAddr.text(), 16)
                 for i in range(256):
-                    buff = self.ap.readBlockMemoryUnaligned8(Addr + 1024*i, 1024)
+                    buff = self.dap.read_memory_block8(Addr + 1024*i, 1024)
                     buff = ''.join([chr(x) for x in buff])
                     index = buff.find('SEGGER RTT')
                     if index != -1:
@@ -101,16 +110,19 @@ class RTTView(QtGui.QWidget):
             except Exception as e:
                 print e
             else:
+                self.cmbDAP.setEnabled(False)
                 self.btnOpen.setText(u'关闭连接')
-                self.lblOpen.setPixmap(QtGui.QPixmap("./Image/inopening.png"))
+                self.lblOpen.setPixmap(QtGui.QPixmap("./image/inopening.png"))
         else:
+            self.daplink.close()
+            self.cmbDAP.setEnabled(True)
             self.btnOpen.setText(u'打开连接')
-            self.lblOpen.setPixmap(QtGui.QPixmap("./Image/inclosing.png"))
-                
+            self.lblOpen.setPixmap(QtGui.QPixmap("./image/inclosing.png"))
+    
     def aUpEmpty(self):
         LEN = (16 + 4*2) + (4*6) * 4
         
-        buf =  self.ap.readBlockMemoryUnaligned8(self.RTTAddr, LEN)
+        buf =  self.dap.read_memory_block8(self.RTTAddr, LEN)
         
         arr = struct.unpack('16sLLLLLLLL24xLLLLLL24x', ''.join([chr(x) for x in buf]))
         
@@ -126,76 +138,74 @@ class RTTView(QtGui.QWidget):
         if self.aUp.RdOff < self.aUp.WrOff:
             len_ = self.aUp.WrOff - self.aUp.RdOff
             
-            arr =  self.ap.readBlockMemoryUnaligned8(self.aUp.pBuffer + self.aUp.RdOff, len_)
+            arr =  self.dap.read_memory_block8(self.aUp.pBuffer + self.aUp.RdOff, len_)
             
             self.aUp.RdOff += len_
 
-            self.ap.write32(self.RTTAddr + (16 + 4*2) + 4*4, self.aUp.RdOff)
+            self.dap.write32(self.RTTAddr + (16 + 4*2) + 4*4, self.aUp.RdOff)
         else:
             len_ = self.aUp.SizeOfBuffer - self.aUp.RdOff + 1
             
-            arr =  self.ap.readBlockMemoryUnaligned8(self.aUp.pBuffer + self.aUp.RdOff, len_)
+            arr =  self.dap.read_memory_block8(self.aUp.pBuffer + self.aUp.RdOff, len_)
                         
             self.aUp.RdOff = 0  #这样下次再读就会进入执行上个条件
             
-            self.ap.write32(self.RTTAddr + (16 + 4*2) + 4*4, self.aUp.RdOff)
+            self.dap.write32(self.RTTAddr + (16 + 4*2) + 4*4, self.aUp.RdOff)
         
         return ''.join([chr(x) for x in arr])
     
     def on_tmrRTT_timeout(self):
         if self.btnOpen.text() == u'关闭连接':
-            if not self.aUpEmpty():
-                str = self.aUpRead()
+            try:
+                if not self.aUpEmpty():
+                    self.rcvbuff += self.aUpRead()
 
-                if self.mode == u'文本显示':
-                    if len(self.txtMain.toPlainText()) > 50000: self.txtMain.clear()
-                    self.txtMain.moveCursor(QtGui.QTextCursor.End)
-                    self.txtMain.insertPlainText(str)
-                    
-                elif self.mode == u'波形显示':
-                    self.PlotBuff += str
-                    if self.PlotBuff.rfind(',') == -1: return
-                    try:
-                        d = [int(x) for x in self.PlotBuff[0:self.PlotBuff.rfind(',')].split(',')]
+                    if self.txtMain.isVisible():
+                        text = self.txtMain.toPlainText() + self.rcvbuff
+                        if len(text) > 10000: text = text[5000:]
+                        self.txtMain.setPlainText(text)
+                        self.txtMain.moveCursor(QtGui.QTextCursor.End)
+                        self.rcvbuff = b''
+
+                    else:
+                        if self.rcvbuff.rfind(',') == -1: return
+                        
+                        d = [int(x) for x in self.rcvbuff[0:self.rcvbuff.rfind(',')].split(',')]
                         for x in d:
                             self.PlotData.pop(0)
-                            self.PlotData.append(x)        
-                    except:
-                        self.PlotBuff = ''
-                    else:
-                        self.PlotBuff = self.PlotBuff[self.PlotBuff.rfind(',')+1:]
-                    
-                    self.PlotCurve.setData(range(1, len(self.PlotData)+1), self.PlotData)
-                    self.qwtPlot.replot()
+                            self.PlotData.append(x)
+                        self.PlotCurve.setData(range(1, len(self.PlotData)+1), self.PlotData)
+                        self.qwtPlot.replot() 
+                        self.rcvbuff = self.rcvbuff[self.rcvbuff.rfind(',')+1:]
+                        
+            except Exception as e:
+                self.rcvbuff = b''
+                print e
 
-        self.detect_daplink()   # 自动检测 DAPLink 的热插拔
+        self.tmrRTT_Cnt += 1
+        if self.tmrRTT_Cnt % 20 == 0:
+            self.detect_daplink()   # 自动检测 DAPLink 的热插拔
 
     def detect_daplink(self):
-        daplinks = pyDAPAccess.DAPAccess.get_connected_devices()
+        daplinks = aggregator.DebugProbeAggregator.get_all_connected_probes()
         
-        if self.daplink and (daplinks == []):   # daplink被拔下
-            try:
-                self.daplink.close()
-            except Exception as e:
-                print e
-            finally:
-                self.daplink = None
-                self.linDAP.clear()
+        if len(daplinks) != self.cmbDAP.count():
+            self.cmbDAP.clear()
+            for daplink in daplinks:
+                self.cmbDAP.addItem(daplink.product_name)
+        
+            self.daplinks = collections.OrderedDict([(daplink.product_name, daplink) for daplink in daplinks])
 
+            if self.daplink and self.daplink.product_name in self.daplinks:
+                self.cmbDAP.setCurrentIndex(self.daplinks.keys().index(self.daplink.product_name))
+            else:                                           # daplink被拔掉
                 self.btnOpen.setText(u'打开连接')
-                self.lblOpen.setPixmap(QtGui.QPixmap("./Image/inclosing.png"))
-        
-        if not self.daplink and daplinks != []:
-            self.daplink = daplinks[0]
-
-            self.linDAP.clear()
-            self.linDAP.setText(self.daplink._product_name)
-
+                self.lblOpen.setPixmap(QtGui.QPixmap("./image/inclosing.png"))
+            
     @QtCore.pyqtSlot(str)
     def on_cmbMode_currentIndexChanged(self, str):
-        self.mode = str
-        self.txtMain.setVisible(self.mode == u'文本显示')
-        self.qwtPlot.setVisible(self.mode == u'波形显示')
+        self.txtMain.setVisible(str == u'文本显示')
+        self.qwtPlot.setVisible(str == u'波形显示')
     
     @QtCore.pyqtSlot()
     def on_btnClear_clicked(self):

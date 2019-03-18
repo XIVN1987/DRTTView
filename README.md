@@ -1,5 +1,5 @@
 # DRTTView
-SEGGER-RTT Client using CMSIS-DAP (DAPLink)
+SEGGER-RTT Client for CMSIS-DAP (DAPLink) and ST-Link v2-1 Debugger
 
 to run this software, you need python 2.7, pyqt4, pyqwt5, enum34 and a usb backend (hidapi or pywinusb for windows, pyusb for linux, hidapi for mac)
 
@@ -10,3 +10,5 @@ Note: the software uses the following statement to find the debugger
 if product_name.find("CMSIS-DAP") < 0:
     # Skip non cmsis-dap HID device
 ```
+
+Note: you may need to update ST-Link's firmware to the latest

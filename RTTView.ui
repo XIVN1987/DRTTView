@@ -22,7 +22,7 @@
   </property>
   <property name="windowIcon">
    <iconset>
-    <normaloff>Image/serial.ico</normaloff>Image/serial.ico</iconset>
+    <normaloff>image/serial.ico</normaloff>image/serial.ico</iconset>
   </property>
   <layout class="QVBoxLayout" name="vLayout0">
    <item>
@@ -51,9 +51,12 @@
       </widget>
      </item>
      <item>
-      <widget class="QLineEdit" name="linDAP">
-       <property name="enabled">
-        <bool>false</bool>
+      <widget class="QComboBox" name="cmbDAP">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
        </property>
       </widget>
      </item>
@@ -110,7 +113,7 @@
         <string/>
        </property>
        <property name="pixmap">
-        <pixmap>Image/inclosing.png</pixmap>
+        <pixmap>image/inclosing.png</pixmap>
        </property>
       </widget>
      </item>

@@ -2,6 +2,7 @@
 #coding: utf-8
 import os
 import sys
+import ctypes
 import struct
 import logging
 import collections
@@ -19,12 +20,24 @@ from pyocd.probe import aggregator
 os.environ['PATH'] = os.path.dirname(os.path.abspath(__file__)) + os.pathsep + os.environ['PATH']
 
 
-class RingBuffer(object):
-    def __init__(self, arr):
-        self.sName, self.pBuffer, self.SizeOfBuffer, self.WrOff, self.RdOff, self.Flags = arr
-    
-    def __str__(self):
-        return 'Buffer Address = 0x%08X\nBuffer Size    = %d\nWrite Offset   = %d\nRead Offset    = %d\n' %(self.pBuffer, self.SizeOfBuffer, self.WrOff, self.RdOff)
+class RingBuffer(ctypes.Structure):
+    _fields_ = [
+        ('sName',        ctypes.POINTER(ctypes.c_char)),
+        ('pBuffer',      ctypes.POINTER(ctypes.c_byte)),
+        ('SizeOfBuffer', ctypes.c_uint),
+        ('WrOff',        ctypes.c_uint),    # Position of next item to be written. 对于aUp：   芯片更新WrOff，主机更新RdOff
+        ('RdOff',        ctypes.c_uint),    # Position of next item to be read.    对于aDown： 主机更新WrOff，芯片更新RdOff
+        ('Flags',        ctypes.c_uint),
+    ]
+
+class SEGGER_RTT_CB(ctypes.Structure):      # Control Block
+    _fields_ = [
+        ('acID',              ctypes.c_char * 16),
+        ('MaxNumUpBuffers',   ctypes.c_uint),
+        ('MaxNumDownBuffers', ctypes.c_uint),
+        ('aUp',               RingBuffer * 2),
+        ('aDown',             RingBuffer * 2),
+    ]
 
 
 '''
@@ -67,14 +80,12 @@ class RTTView(QtGui.QWidget):
             self.conf.add_section('Memory')
             self.conf.set('Memory', 'StartAddr', '0x20000000')
 
-        self.linAddr.setText(self.conf.get('Memory', 'StartAddr'))
-
     def initQwtPlot(self):
         self.PlotData = [0]*1000
         
         self.qwtPlot = QwtPlot(self)
         self.qwtPlot.setVisible(False)
-        self.vLayout0.insertWidget(0, self.qwtPlot)
+        self.vLayout.insertWidget(0, self.qwtPlot)
         
         self.PlotCurve = QwtPlotCurve()
         self.PlotCurve.attach(self.qwtPlot)
@@ -96,95 +107,135 @@ class RTTView(QtGui.QWidget):
 
                 self.dap = coresight.cortex_m.CortexM(None, ap)
                 
-                Addr = int(self.linAddr.text(), 16)
+                Addr = int(self.conf.get('Memory', 'StartAddr'), 16)
                 for i in range(256):
                     buff = self.dap.read_memory_block8(Addr + 1024*i, 1024)
                     buff = ''.join([chr(x) for x in buff])
                     index = buff.find('SEGGER RTT')
                     if index != -1:
                         self.RTTAddr = Addr + 1024*i + index
-                        print '_SEGGER_RTT @ 0x%08X' %self.RTTAddr
+
+                        buff = self.dap.read_memory_block8(self.RTTAddr, ctypes.sizeof(SEGGER_RTT_CB))
+
+                        rtt_cb = SEGGER_RTT_CB.from_buffer(bytearray(buff))
+                        self.aUpAddr = self.RTTAddr + 16 + 4 + 4
+                        self.aDownAddr = self.aUpAddr + ctypes.sizeof(RingBuffer) * rtt_cb.MaxNumUpBuffers
+
+                        self.txtMain.append('\n_SEGGER_RTT @ 0x%08X with %d aUp and %d aDown\n' %(self.RTTAddr, rtt_cb.MaxNumUpBuffers, rtt_cb.MaxNumDownBuffers))
                         break
                 else:
                     raise Exception('Can not find _SEGGER_RTT')
             except Exception as e:
-                print e
+                self.txtMain.append('\n%s\n' %str(e))
             else:
                 self.cmbDAP.setEnabled(False)
                 self.btnOpen.setText(u'关闭连接')
-                self.lblOpen.setPixmap(QtGui.QPixmap("./image/inopening.png"))
         else:
             self.daplink.close()
             self.cmbDAP.setEnabled(True)
             self.btnOpen.setText(u'打开连接')
-            self.lblOpen.setPixmap(QtGui.QPixmap("./image/inclosing.png"))
-    
-    def aUpEmpty(self):
-        LEN = (16 + 4*2) + (4*6) * 4
-        
-        buf =  self.dap.read_memory_block8(self.RTTAddr, LEN)
-        
-        arr = struct.unpack('16sLLLLLLLL24xLLLLLL24x', ''.join([chr(x) for x in buf]))
-        
-        self.aUp = RingBuffer(arr[3:9])
-
-        print 'WrOff=%d, RdOff=%d' %(self.aUp.WrOff, self.aUp.RdOff)
-        
-        self.aDown = RingBuffer(arr[9:15])
-        
-        return (self.aUp.RdOff == self.aUp.WrOff)
     
     def aUpRead(self):
-        if self.aUp.RdOff < self.aUp.WrOff:
-            len_ = self.aUp.WrOff - self.aUp.RdOff
-            
-            arr =  self.dap.read_memory_block8(self.aUp.pBuffer + self.aUp.RdOff, len_)
-            
-            self.aUp.RdOff += len_
-
-            self.dap.write32(self.RTTAddr + (16 + 4*2) + 4*4, self.aUp.RdOff)
-        else:
-            len_ = self.aUp.SizeOfBuffer - self.aUp.RdOff + 1
-            
-            arr =  self.dap.read_memory_block8(self.aUp.pBuffer + self.aUp.RdOff, len_)
-                        
-            self.aUp.RdOff = 0  #这样下次再读就会进入执行上个条件
-            
-            self.dap.write32(self.RTTAddr + (16 + 4*2) + 4*4, self.aUp.RdOff)
+        buf = self.dap.read_memory_block8(self.aUpAddr, ctypes.sizeof(RingBuffer))
+        aUp = RingBuffer.from_buffer(bytearray(buf))
         
-        return ''.join([chr(x) for x in arr])
+        if aUp.RdOff == aUp.WrOff:
+            buf = []
+
+        elif aUp.RdOff < aUp.WrOff:
+            cnt = aUp.WrOff - aUp.RdOff
+            buf = self.dap.read_memory_block8(ctypes.cast(aUp.pBuffer, ctypes.c_void_p).value + aUp.RdOff, cnt)
+            
+            aUp.RdOff += cnt
+            
+            self.dap.write32(self.aUpAddr + 4*4, aUp.RdOff)
+
+        else:
+            cnt = aUp.SizeOfBuffer - aUp.RdOff
+            buf = self.dap.read_memory_block8(ctypes.cast(aUp.pBuffer, ctypes.c_void_p).value + aUp.RdOff, cnt)
+            
+            aUp.RdOff = 0  #这样下次再读就会进入执行上个条件
+            
+            self.dap.write32(self.aUpAddr + 4*4, aUp.RdOff)
+        
+        return ''.join([chr(x) for x in buf])
     
     def on_tmrRTT_timeout(self):
         if self.btnOpen.text() == u'关闭连接':
             try:
-                if not self.aUpEmpty():
-                    self.rcvbuff += self.aUpRead()
+                self.rcvbuff += self.aUpRead()
 
-                    if self.txtMain.isVisible():
-                        text = self.txtMain.toPlainText() + self.rcvbuff
-                        if len(text) > 10000: text = text[5000:]
-                        self.txtMain.setPlainText(text)
-                        self.txtMain.moveCursor(QtGui.QTextCursor.End)
-                        self.rcvbuff = b''
-
+                if self.txtMain.isVisible():
+                    if self.chkHEXShow.isChecked():
+                        text = ''.join('%02X ' %ord(c) for c in self.rcvbuff)
                     else:
-                        if self.rcvbuff.rfind(',') == -1: return
-                        
-                        d = [int(x) for x in self.rcvbuff[0:self.rcvbuff.rfind(',')].split(',')]
-                        for x in d:
-                            self.PlotData.pop(0)
-                            self.PlotData.append(x)
-                        self.PlotCurve.setData(range(1, len(self.PlotData)+1), self.PlotData)
-                        self.qwtPlot.replot() 
-                        self.rcvbuff = self.rcvbuff[self.rcvbuff.rfind(',')+1:]
+                        text = self.rcvbuff
+
+                    if len(self.txtMain.toPlainText()) > 25000: self.txtMain.clear()
+                    self.txtMain.moveCursor(QtGui.QTextCursor.End)
+                    self.txtMain.insertPlainText(text)
+
+                    self.rcvbuff = b''
+
+                else:
+                    if self.rcvbuff.rfind(',') == -1: return
+                    
+                    d = [int(x) for x in self.rcvbuff[0:self.rcvbuff.rfind(',')].split(',')]
+                    for x in d:
+                        self.PlotData.pop(0)
+                        self.PlotData.append(x)
+                    self.PlotCurve.setData(range(1, len(self.PlotData)+1), self.PlotData)
+                    self.qwtPlot.replot() 
+                    
+                    self.rcvbuff = self.rcvbuff[self.rcvbuff.rfind(',')+1:]
                         
             except Exception as e:
                 self.rcvbuff = b''
-                print e
+                self.txtMain.append('\n%s\n' %str(e))
 
-        self.tmrRTT_Cnt += 1
-        if self.tmrRTT_Cnt % 20 == 0:
-            self.detect_daplink()   # 自动检测 DAPLink 的热插拔
+        else:
+            self.tmrRTT_Cnt += 1
+            if self.tmrRTT_Cnt % 20 == 0:
+                self.detect_daplink()   # 自动检测 DAPLink 的热插拔
+
+    def aDownWrite(self, bytes):
+        buf = self.dap.read_memory_block8(self.aDownAddr, ctypes.sizeof(RingBuffer))
+        aDown = RingBuffer.from_buffer(bytearray(buf))
+        
+        if aDown.WrOff >= aDown.RdOff:
+            if aDown.RdOff != 0: cnt = min(aDown.SizeOfBuffer - aDown.WrOff, len(bytes))
+            else:                cnt = min(aDown.SizeOfBuffer - 1 - aDown.WrOff, len(bytes))    # 写入操作不能使得 aDown.WrOff == aDown.RdOff，以区分满和空
+            self.dap.write_memory_block8(ctypes.cast(aDown.pBuffer, ctypes.c_void_p).value + aDown.WrOff, [ord(x) for x in bytes[:cnt]])
+            
+            aDown.WrOff += cnt
+            if aDown.WrOff == aDown.SizeOfBuffer: aDown.WrOff = 0
+
+            bytes = bytes[cnt:]
+
+        if bytes and aDown.RdOff != 0 and aDown.RdOff != 1:     # != 0 确保 aDown.WrOff 折返回 0，!= 1 确保有空间可写入
+            cnt = min(aDown.RdOff - 1 - aDown.WrOff, len(bytes))    # - 1 确保写入操作不导致WrOff与RdOff指向同一位置
+            self.dap.write_memory_block8(ctypes.cast(aDown.pBuffer, ctypes.c_void_p).value + aDown.WrOff, [ord(x) for x in bytes[:cnt]])
+
+            aDown.WrOff += cnt
+
+        self.dap.write32(self.aDownAddr + 4*3, aDown.WrOff)
+
+    @QtCore.pyqtSlot()
+    def on_btnSend_clicked(self):
+        if self.btnOpen.text() == u'关闭连接':
+            text = self.txtSend.toPlainText()
+
+            try:
+                if self.chkHEXSend.isChecked():
+                    bytes = ''.join([chr(int(x, 16)) for x in text.split()])
+
+                else:
+                    bytes = text
+
+                self.aDownWrite(bytes)
+
+            except Exception as e:
+                self.txtMain.append('\n%s\n' %str(e))
 
     def detect_daplink(self):
         daplinks = aggregator.DebugProbeAggregator.get_all_connected_probes()
@@ -200,19 +251,17 @@ class RTTView(QtGui.QWidget):
                 self.cmbDAP.setCurrentIndex(self.daplinks.keys().index(self.daplink.product_name))
             else:                                           # daplink被拔掉
                 self.btnOpen.setText(u'打开连接')
-                self.lblOpen.setPixmap(QtGui.QPixmap("./image/inclosing.png"))
             
-    @QtCore.pyqtSlot(str)
-    def on_cmbMode_currentIndexChanged(self, str):
-        self.txtMain.setVisible(str == u'文本显示')
-        self.qwtPlot.setVisible(str == u'波形显示')
+    @QtCore.pyqtSlot(int)
+    def on_chkWavShow_stateChanged(self, state):
+        self.qwtPlot.setVisible(state == QtCore.Qt.Checked)
+        self.txtMain.setVisible(state == QtCore.Qt.Unchecked)
     
     @QtCore.pyqtSlot()
     def on_btnClear_clicked(self):
         self.txtMain.clear()
     
     def closeEvent(self, evt):
-        self.conf.set('Memory', 'StartAddr', self.linAddr.text())   
         self.conf.write(open('setting.ini', 'w'))
 
 

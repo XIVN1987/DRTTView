@@ -1,29 +1,23 @@
-#! python2
-#coding: utf-8
+#! python3
 import os
 import sys
 import ctypes
-import struct
-import logging
 import collections
-import ConfigParser
+import configparser
 
-import sip
-sip.setapi('QString', 2)
-from PyQt4 import QtCore, QtGui, uic
-from PyQt4.Qwt5 import QwtPlot, QwtPlotCurve
+from PyQt5 import QtCore, QtGui, uic
+from PyQt5.QtCore import pyqtSlot, pyqtSignal, Qt, QThread
+from PyQt5.QtWidgets import QApplication, QWidget, QMessageBox, QFileDialog
+from PyQt5.QtChart import QChart, QChartView, QLineSeries
 
-from pyocd import coresight
 from pyocd.probe import aggregator
-
-
-os.environ['PATH'] = os.path.dirname(os.path.abspath(__file__)) + os.pathsep + os.environ['PATH']
+from pyocd.coresight import dap, ap, cortex_m
 
 
 class RingBuffer(ctypes.Structure):
     _fields_ = [
-        ('sName',        ctypes.POINTER(ctypes.c_char)),
-        ('pBuffer',      ctypes.POINTER(ctypes.c_byte)),
+        ('sName',        ctypes.c_uint),    # ctypes.POINTER(ctypes.c_char)，64位Python中 ctypes.POINTER 是64位的，与目标芯片不符
+        ('pBuffer',      ctypes.c_uint),    # ctypes.POINTER(ctypes.c_byte)
         ('SizeOfBuffer', ctypes.c_uint),
         ('WrOff',        ctypes.c_uint),    # Position of next item to be written. 对于aUp：   芯片更新WrOff，主机更新RdOff
         ('RdOff',        ctypes.c_uint),    # Position of next item to be read.    对于aDown： 主机更新WrOff，芯片更新RdOff
@@ -42,13 +36,13 @@ class SEGGER_RTT_CB(ctypes.Structure):      # Control Block
 
 '''
 from RTTView_UI import Ui_RTTView
-class RTTView(QtGui.QWidget, Ui_RTTView):
+class RTTView(QWidget, Ui_RTTView):
     def __init__(self, parent=None):
         super(RTTView, self).__init__(parent)
         
         self.setupUi(self)
 '''
-class RTTView(QtGui.QWidget):
+class RTTView(QWidget):
     def __init__(self, parent=None):
         super(RTTView, self).__init__(parent)
         
@@ -58,7 +52,7 @@ class RTTView(QtGui.QWidget):
 
         self.initQwtPlot()
 
-        self.rcvbuff = b''
+        self.rcvbuff = ''
 
         self.daplink = None
 
@@ -71,10 +65,10 @@ class RTTView(QtGui.QWidget):
     
     def initSetting(self):
         if not os.path.exists('setting.ini'):
-            open('setting.ini', 'w')
+            open('setting.ini', 'w', encoding='utf-8')
         
-        self.conf = ConfigParser.ConfigParser()
-        self.conf.read('setting.ini')
+        self.conf = configparser.ConfigParser()
+        self.conf.read('setting.ini', encoding='utf-8')
         
         if not self.conf.has_section('Memory'):
             self.conf.add_section('Memory')
@@ -82,30 +76,36 @@ class RTTView(QtGui.QWidget):
 
     def initQwtPlot(self):
         self.PlotData = [0]*1000
+
+        self.PlotChart = QChart()
+        self.PlotChart.legend().hide()
+
+        self.ChartView = QChartView(self.PlotChart)
+        self.ChartView.setVisible(False)
+        self.vLayout.insertWidget(0, self.ChartView)
         
-        self.qwtPlot = QwtPlot(self)
-        self.qwtPlot.setVisible(False)
-        self.vLayout.insertWidget(0, self.qwtPlot)
-        
-        self.PlotCurve = QwtPlotCurve()
-        self.PlotCurve.attach(self.qwtPlot)
-        self.PlotCurve.setData(range(1, len(self.PlotData)+1), self.PlotData)
+        self.PlotCurve = QLineSeries()
+        self.PlotCurve.setColor(Qt.red)
+        self.PlotChart.addSeries(self.PlotCurve)
+
+        self.PlotChart.createDefaultAxes()
+        self.PlotChart.axisX().setLabelFormat('%d')
     
-    @QtCore.pyqtSlot()
+    @pyqtSlot()
     def on_btnOpen_clicked(self):
         if self.btnOpen.text() == u'打开连接':
             try:
                 self.daplink = self.daplinks[self.cmbDAP.currentText()]
                 self.daplink.open()
                 
-                dp = coresight.dap.DebugPort(self.daplink, None)
-                dp.init()
-                dp.power_up_debug()
+                _dp = dap.DebugPort(self.daplink, None)
+                _dp.init()
+                _dp.power_up_debug()
 
-                ap = coresight.ap.AHB_AP(dp, 0)
-                ap.init()
+                _ap = ap.AHB_AP(_dp, 0)
+                _ap.init()
 
-                self.dap = coresight.cortex_m.CortexM(None, ap)
+                self.dap = cortex_m.CortexM(None, _ap)
                 
                 Addr = int(self.conf.get('Memory', 'StartAddr'), 16)
                 for i in range(256):
@@ -126,7 +126,7 @@ class RTTView(QtGui.QWidget):
                 else:
                     raise Exception('Can not find _SEGGER_RTT')
             except Exception as e:
-                self.txtMain.append('\n%s\n' %str(e))
+                self.txtMain.append(f'\n{str(e)}\n')
             else:
                 self.cmbDAP.setEnabled(False)
                 self.btnOpen.setText(u'关闭连接')
@@ -167,7 +167,7 @@ class RTTView(QtGui.QWidget):
 
                 if self.txtMain.isVisible():
                     if self.chkHEXShow.isChecked():
-                        text = ''.join('%02X ' %ord(c) for c in self.rcvbuff)
+                        text = ''.join(f'{ord(x):02X} ' for x in self.rcvbuff)
                     else:
                         text = self.rcvbuff
 
@@ -175,7 +175,7 @@ class RTTView(QtGui.QWidget):
                     self.txtMain.moveCursor(QtGui.QTextCursor.End)
                     self.txtMain.insertPlainText(text)
 
-                    self.rcvbuff = b''
+                    self.rcvbuff = ''
 
                 else:
                     if self.rcvbuff.rfind(',') == -1: return
@@ -184,58 +184,59 @@ class RTTView(QtGui.QWidget):
                     for x in d:
                         self.PlotData.pop(0)
                         self.PlotData.append(x)
-                    self.PlotCurve.setData(range(1, len(self.PlotData)+1), self.PlotData)
-                    self.qwtPlot.replot() 
+
+                    points = [QtCore.QPoint(i, v) for i, v in enumerate(self.PlotData)]
+                    
+                    self.PlotCurve.replace(points)
+                    self.PlotChart.axisX().setMax(len(self.PlotData))
+                    self.PlotChart.axisY().setRange(min(self.PlotData), max(self.PlotData)) 
                     
                     self.rcvbuff = self.rcvbuff[self.rcvbuff.rfind(',')+1:]
-                        
+                    
             except Exception as e:
-                self.rcvbuff = b''
-                self.txtMain.append('\n%s\n' %str(e))
+                self.rcvbuff = ''
+                print(str(e))   # 波形显示模式下 txtMain 不可见，因此错误信息不能显示在其上
 
         else:
             self.tmrRTT_Cnt += 1
             if self.tmrRTT_Cnt % 20 == 0:
                 self.detect_daplink()   # 自动检测 DAPLink 的热插拔
 
-    def aDownWrite(self, bytes):
+    def aDownWrite(self, text):
         buf = self.dap.read_memory_block8(self.aDownAddr, ctypes.sizeof(RingBuffer))
         aDown = RingBuffer.from_buffer(bytearray(buf))
         
         if aDown.WrOff >= aDown.RdOff:
-            if aDown.RdOff != 0: cnt = min(aDown.SizeOfBuffer - aDown.WrOff, len(bytes))
-            else:                cnt = min(aDown.SizeOfBuffer - 1 - aDown.WrOff, len(bytes))    # 写入操作不能使得 aDown.WrOff == aDown.RdOff，以区分满和空
-            self.dap.write_memory_block8(ctypes.cast(aDown.pBuffer, ctypes.c_void_p).value + aDown.WrOff, [ord(x) for x in bytes[:cnt]])
+            if aDown.RdOff != 0: cnt = min(aDown.SizeOfBuffer - aDown.WrOff, len(text))
+            else:                cnt = min(aDown.SizeOfBuffer - 1 - aDown.WrOff, len(text))    # 写入操作不能使得 aDown.WrOff == aDown.RdOff，以区分满和空
+            self.dap.write_memory_block8(ctypes.cast(aDown.pBuffer, ctypes.c_void_p).value + aDown.WrOff, [ord(x) for x in text[:cnt]])
             
             aDown.WrOff += cnt
             if aDown.WrOff == aDown.SizeOfBuffer: aDown.WrOff = 0
 
-            bytes = bytes[cnt:]
+            text = text[cnt:]
 
-        if bytes and aDown.RdOff != 0 and aDown.RdOff != 1:     # != 0 确保 aDown.WrOff 折返回 0，!= 1 确保有空间可写入
-            cnt = min(aDown.RdOff - 1 - aDown.WrOff, len(bytes))    # - 1 确保写入操作不导致WrOff与RdOff指向同一位置
-            self.dap.write_memory_block8(ctypes.cast(aDown.pBuffer, ctypes.c_void_p).value + aDown.WrOff, [ord(x) for x in bytes[:cnt]])
+        if text and aDown.RdOff != 0 and aDown.RdOff != 1:         # != 0 确保 aDown.WrOff 折返回 0，!= 1 确保有空间可写入
+            cnt = min(aDown.RdOff - 1 - aDown.WrOff, len(text))    # - 1 确保写入操作不导致WrOff与RdOff指向同一位置
+            self.dap.write_memory_block8(ctypes.cast(aDown.pBuffer, ctypes.c_void_p).value + aDown.WrOff, [ord(x) for x in text[:cnt]])
 
             aDown.WrOff += cnt
 
         self.dap.write32(self.aDownAddr + 4*3, aDown.WrOff)
 
-    @QtCore.pyqtSlot()
+    @pyqtSlot()
     def on_btnSend_clicked(self):
         if self.btnOpen.text() == u'关闭连接':
             text = self.txtSend.toPlainText()
 
             try:
                 if self.chkHEXSend.isChecked():
-                    bytes = ''.join([chr(int(x, 16)) for x in text.split()])
+                    text = ''.join([chr(int(x, 16)) for x in text.split()])
 
-                else:
-                    bytes = text
-
-                self.aDownWrite(bytes)
+                self.aDownWrite(text)
 
             except Exception as e:
-                self.txtMain.append('\n%s\n' %str(e))
+                self.txtMain.append(f'\n{str(e)}\n')
 
     def detect_daplink(self):
         daplinks = aggregator.DebugProbeAggregator.get_all_connected_probes()
@@ -252,21 +253,21 @@ class RTTView(QtGui.QWidget):
             else:                                           # daplink被拔掉
                 self.btnOpen.setText(u'打开连接')
             
-    @QtCore.pyqtSlot(int)
+    @pyqtSlot(int)
     def on_chkWavShow_stateChanged(self, state):
-        self.qwtPlot.setVisible(state == QtCore.Qt.Checked)
-        self.txtMain.setVisible(state == QtCore.Qt.Unchecked)
+        self.ChartView.setVisible(state == Qt.Checked)
+        self.txtMain.setVisible(state == Qt.Unchecked)
     
-    @QtCore.pyqtSlot()
+    @pyqtSlot()
     def on_btnClear_clicked(self):
         self.txtMain.clear()
     
     def closeEvent(self, evt):
-        self.conf.write(open('setting.ini', 'w'))
+        self.conf.write(open('setting.ini', 'w', encoding='utf-8'))
 
 
 if __name__ == "__main__":
-    app = QtGui.QApplication(sys.argv)
+    app = QApplication(sys.argv)
     rtt = RTTView()
     rtt.show()
-    app.exec_()
+    app.exec()

@@ -14,6 +14,8 @@ from pyocd.probe import aggregator
 from pyocd.coresight import dap, ap, cortex_m
 
 
+N_CURVES = 4
+
 class RingBuffer(ctypes.Structure):
     _fields_ = [
         ('sName',        ctypes.c_uint),    # ctypes.POINTER(ctypes.c_char)，64位Python中 ctypes.POINTER 是64位的，与目标芯片不符
@@ -75,21 +77,16 @@ class RTTView(QWidget):
             self.conf.set('Memory', 'StartAddr', '0x20000000')
 
     def initQwtPlot(self):
-        self.PlotData = [0]*1000
+        self.PlotData  = [[0]*1000 for i in range(N_CURVES)]
+        self.PlotPoint = [[QtCore.QPointF(j, 0) for j in range(1000)] for i in range(N_CURVES)]
 
         self.PlotChart = QChart()
-        self.PlotChart.legend().hide()
 
         self.ChartView = QChartView(self.PlotChart)
         self.ChartView.setVisible(False)
         self.vLayout.insertWidget(0, self.ChartView)
         
-        self.PlotCurve = QLineSeries()
-        self.PlotCurve.setColor(Qt.red)
-        self.PlotChart.addSeries(self.PlotCurve)
-
-        self.PlotChart.createDefaultAxes()
-        self.PlotChart.axisX().setLabelFormat('%d')
+        self.PlotCurve = [QLineSeries() for i in range(N_CURVES)]
     
     @pyqtSlot()
     def on_btnOpen_clicked(self):
@@ -180,18 +177,39 @@ class RTTView(QWidget):
                 else:
                     if self.rcvbuff.rfind(',') == -1: return
                     
-                    d = [int(x) for x in self.rcvbuff[0:self.rcvbuff.rfind(',')].split(',')]
-                    for x in d:
-                        self.PlotData.pop(0)
-                        self.PlotData.append(x)
+                    d = self.rcvbuff[0:self.rcvbuff.rfind(',')].split(',')  # [b'12', b'34'] or [b'12 34', b'56 78']
+                    d = [[float(x) for x in X.strip().split()] for X in d]  # [[12], [34]]   or [[12, 34], [56, 78]]
+                    for arr in d:
+                        for i, x in enumerate(arr):
+                            if i == N_CURVES: break
 
-                    points = [QtCore.QPoint(i, v) for i, v in enumerate(self.PlotData)]
-                    
-                    self.PlotCurve.replace(points)
-                    self.PlotChart.axisX().setMax(len(self.PlotData))
-                    self.PlotChart.axisY().setRange(min(self.PlotData), max(self.PlotData)) 
+                            self.PlotData[i].pop(0)
+                            self.PlotData[i].append(x)
+                            self.PlotPoint[i].pop(0)
+                            self.PlotPoint[i].append(QtCore.QPointF(999, x))
                     
                     self.rcvbuff = self.rcvbuff[self.rcvbuff.rfind(',')+1:]
+
+                    self.tmrRTT_Cnt += 1
+                    if self.tmrRTT_Cnt % 4 == 0:
+                        if len(d[-1]) != len(self.PlotChart.series()):
+                            for series in self.PlotChart.series():
+                                self.PlotChart.removeSeries(series)
+                            for i in range(min(len(d[-1]), N_CURVES)):
+                                self.PlotCurve[i].setName(f'Curve {i+1}')
+                                self.PlotChart.addSeries(self.PlotCurve[i])
+                            self.PlotChart.createDefaultAxes()
+
+                        for i in range(len(self.PlotChart.series())):
+                            for j, point in enumerate(self.PlotPoint[i]):
+                                point.setX(j)
+                        
+                            self.PlotCurve[i].replace(self.PlotPoint[i])
+                    
+                        miny = min([min(d) for d in self.PlotData])
+                        maxy = max([max(d) for d in self.PlotData])
+                        self.PlotChart.axisY().setRange(miny, maxy)
+                        self.PlotChart.axisX().setRange(0000, 1000)
                     
             except Exception as e:
                 self.rcvbuff = ''

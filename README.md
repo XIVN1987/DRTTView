@@ -1,8 +1,7 @@
 # DRTTView
 SEGGER-RTT Client for DAPLink (CMSIS-DAP)
 
-to run this software, you need python 3.6, pyqt5, pyqtchart and a usb backend (hidapi or pywinusb for windows, pyusb for linux, hidapi for mac)
-
+to run this software, you need python 3.6, pyqt5, pyqtchart, pyusb for CMSIS-DAPv2 and another usb-backend for CMSIS-DAPv1 (hidapi or pywinusb for windows, hidapi for mac, pyusb for linux)
 
 wave show:
 ![](https://github.com/XIVN1987/RTTView/blob/master/截屏.gif)
